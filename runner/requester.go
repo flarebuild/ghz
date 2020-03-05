@@ -212,7 +212,7 @@ func (b *Requester) Stop(reason StopReason) {
 
 // Finish finishes the test run
 func (b *Requester) Finish() *Report {
-	close(b.results)
+	close(b.results) // Flare: this is closing when we don't want it to
 	total := time.Since(b.start)
 
 	if b.config.hasLog {

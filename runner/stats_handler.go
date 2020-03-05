@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"google.golang.org/grpc/stats"
@@ -49,6 +50,14 @@ func (c *statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 				st = s.Code().String()
 			}
 
+			// Flare: catch panic induced by sending to closed channel
+			defer func() {
+				if recover() != nil {
+					log.Println("Flare: recovered stat panic, this is causing issues with results!")
+				}
+			}()
+
+			log.Printf("%v %v %v %v", rs.Error, st, duration, rs.EndTime)
 			c.results <- &callResult{rs.Error, st, duration, rs.EndTime}
 
 			if c.hasLog {

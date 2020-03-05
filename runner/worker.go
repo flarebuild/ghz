@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"sync/atomic"
 	"time"
 
@@ -126,7 +127,7 @@ func (w *Worker) makeRequest() error {
 	if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
 		_ = w.makeBidiRequest(&ctx, inputs)
 	} else if w.mtd.IsClientStreaming() {
-		_ = w.makeClientStreamingRequest(&ctx, inputs)
+		_ = w.makeClientStreamingRequest(&ctx, inputs, -1)
 	} else {
 
 		inputsLen := len(inputs)
@@ -182,7 +183,18 @@ func (w *Worker) getMessages(ctd *callTemplateData, inputData []byte) ([]*dynami
 	return inputs, nil
 }
 
-func (w *Worker) makeClientStreamingRequest(ctx *context.Context, input []*dynamic.Message) error {
+// Flare: this method matters to flare benchmarks
+func (w *Worker) makeClientStreamingRequest(ctx *context.Context, input []*dynamic.Message, counter int) error {
+	if counter == -1 {
+		counter = 0
+	}
+	inputLen := len(input)
+	if counter == inputLen {
+		return nil
+	}
+	if input == nil || inputLen == 0 {
+		return nil
+	}
 	str, err := w.stub.InvokeRpcClientStream(*ctx, w.mtd)
 
 	if err != nil && w.config.hasLog {
@@ -191,22 +203,7 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context, input []*dynam
 			"call", w.mtd.GetFullyQualifiedName(), "error", err)
 	}
 
-	counter := 0
-
 	for err == nil {
-		inputLen := len(input)
-		if input == nil || inputLen == 0 {
-			res, closeErr := str.CloseAndReceive()
-
-			if w.config.hasLog {
-				w.config.log.Debugw("Close and receive", "workerID", w.workerID, "call type", "client-streaming",
-					"call", w.mtd.GetFullyQualifiedName(),
-					"response", res, "error", closeErr)
-			}
-
-			break
-		}
-
 		if counter == inputLen {
 			res, closeErr := str.CloseAndReceive()
 
@@ -215,6 +212,7 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context, input []*dynam
 					"call", w.mtd.GetFullyQualifiedName(),
 					"response", res, "error", closeErr)
 			}
+			log.Println("CloseAndReceive: counter == inputLen")
 
 			break
 		}
@@ -245,10 +243,19 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context, input []*dynam
 					"call", w.mtd.GetFullyQualifiedName(),
 					"response", res, "error", closeErr)
 			}
+			log.Println("CloseAndReceive: EOF")
 
 			break
 		}
 		counter++
+		// Flare: since some remote cache clients terminate the connection on finish_write (we hit the EOF handler above)
+		// we need to recursively invoke this streaming request method, passing counter state so we pick up where we
+		// left off.
+		if payload.GetFieldByName("finish_write") == true {
+			if counter < inputLen {
+				return w.makeClientStreamingRequest(ctx, input, counter)
+			}
+		}
 	}
 	return nil
 }
